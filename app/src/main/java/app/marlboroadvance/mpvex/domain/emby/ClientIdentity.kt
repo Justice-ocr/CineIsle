@@ -49,9 +49,14 @@ internal object ClientIdentity {
    * `X-Emby-Authorization` 的值：`Emby Client="Hills", Device="…", DeviceId="…", Version="1.11.0"`。
    *
    * 登录时既放 header，也放 query（服务端两种都认，Hills 两个都发）。
+   * 默认前缀是 `Emby`（真机实测值）；个别只认老格式的服务端要 `MediaBrowser`，
+   * 由 [authorizationHeaderWithScheme] 指定。
    */
-  fun authorizationHeader(deviceId: String): String =
-    "Emby Client=\"$CLIENT_NAME\", Device=\"$deviceName\", DeviceId=\"$deviceId\", Version=\"$CLIENT_VERSION\""
+  fun authorizationHeader(deviceId: String): String = authorizationHeaderWithScheme("Emby", deviceId)
+
+  /** 指定 scheme 前缀的标识串（`Emby` / `MediaBrowser`）。 */
+  fun authorizationHeaderWithScheme(scheme: String, deviceId: String): String =
+    "$scheme Client=\"$CLIENT_NAME\", Device=\"$deviceName\", DeviceId=\"$deviceId\", Version=\"$CLIENT_VERSION\""
 
   /**
    * 登录请求附带的客户端标识 query 参数（Hills 的真实形态：6 个参数全在 URL 上）。

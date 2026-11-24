@@ -261,16 +261,33 @@ object EmbyClient {
   fun authenticateByName(server: EmbyServer, username: String, password: String): EmbyAuthResult {
     val deviceId = androidDeviceId(server.host)
     val body = """{"Username":"$username","Password":"$password","Pw":"$password"}"""
-    val authHeader = ClientIdentity.authorizationHeader(deviceId)
     val query = ClientIdentity.loginQuery(deviceId).entries.joinToString("&") { (k, v) ->
       "$k=${java.net.URLEncoder.encode(v, "UTF-8")}"
     }
-    val req = Request.Builder()
-      .url("${EmbyEndpoints.hostUrl(server)}/emby/Users/AuthenticateByName?$query")
-      .header("X-Emby-Authorization", authHeader)
+    val builder = Request.Builder()
       .post(body.toRequestBody(LOGIN_MEDIA))
-      .build()
-    return execJson(req)
+
+    fun send(authHeader: String, withQuery: Boolean): EmbyAuthResult {
+      val url = "${EmbyEndpoints.hostUrl(server)}/emby/Users/AuthenticateByName" +
+        if (withQuery) "?$query" else ""
+      val req = builder.url(url).header("X-Emby-Authorization", authHeader).build()
+      return execJson(req)
+    }
+
+    val primary = ClientIdentity.authorizationHeader(deviceId)
+    return try {
+      send(primary, withQuery = true)
+    } catch (e: EmbyApiException) {
+      // 个别服务端（老版 Emby / 只认网页端格式的反代）不认 `Emby` 前缀，
+      // 会把标识当成缺失并回 400 invalid_client_identity。
+      // 只对这一个错误码降级到官方文档里的 `MediaBrowser` 前缀重试一次，
+      // 其它错误（密码错、账号禁用、风控）照原样上抛，不掩盖真正原因。
+      if (e.code == 400 && e.message.orEmpty().contains("invalid_client_identity")) {
+        send(ClientIdentity.authorizationHeaderWithScheme("MediaBrowser", deviceId), withQuery = false)
+      } else {
+        throw e
+      }
+    }
   }
 
   /** 登录 body 的 content-type：Hills 发的是不带 charset 的 `application/json`。 */

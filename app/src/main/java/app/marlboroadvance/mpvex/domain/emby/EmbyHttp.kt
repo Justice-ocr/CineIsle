@@ -147,6 +147,7 @@ object EmbyHttp {
         .writeTimeout(30, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
         .addInterceptor(userAgentInterceptor)
+        .addInterceptor(clientIdentityInterceptor)
     if (withRetry) builder.addInterceptor(retryInterceptor)
     return builder
   }
@@ -160,6 +161,37 @@ object EmbyHttp {
         chain.proceed(req)
       } else {
         chain.proceed(req.newBuilder().header("User-Agent", USER_AGENT).build())
+      }
+    }
+
+  /**
+   * 客户端标识拦截器：给**每一个**打到 Emby 接口的请求补上自报标识。
+   *
+   * 为什么必须全量加而不是只在登录加：服务端（Emby 新版 / 部分反代或插件）会把
+   * 「没有带客户端标识」的请求直接判成
+   * `400 {"ErrorCode":"invalid_client_identity","Message":"A valid client identity is required."}`
+   * —— 连**未登录**的 `System/Info/Public` 探活、图片、播放上报都跑不掉。
+   * 只在登录那一个请求上带，就会出现「登录成功但探活 / 收藏 400」这种半残状态。
+   *
+   * Hills 的做法就是拦截器全量加（它的 6 个标识参数对每个请求都发），这里对齐。
+   * DeviceId 用 `url.host` 做种子，与登录用的 `server.host` 同源。
+   */
+  private val clientIdentityInterceptor =
+    Interceptor { chain ->
+      val req = chain.request()
+      if (!req.url.encodedPath.contains("/emby/")) {
+        chain.proceed(req)
+      } else {
+        val deviceId = androidDeviceId(req.url.host)
+        val builder = req.newBuilder()
+        ClientIdentity.apiQuery(deviceId).forEach { (name, value) ->
+          // 调用点已经显式写过的（例如登录那条的 X-Emby-Client）不覆盖
+          if (req.header(name) == null) builder.header(name, value)
+        }
+        if (req.header("X-Emby-Authorization") == null) {
+          builder.header("X-Emby-Authorization", ClientIdentity.authorizationHeader(deviceId))
+        }
+        chain.proceed(builder.build())
       }
     }
 
