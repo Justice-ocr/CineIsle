@@ -59,18 +59,14 @@ object EmbyHttpCore {
   /**
    * 收藏 / 已播放等开关型请求附带的客户端标识 query 参数。
    *
-   * 与 Emby Web 请求一致：该服务端上
-   * 历史上出现过不带这几个参数时「回 200 但收藏没落库」的假成功 —— 请求形态与
-   * Web 完全一致后写入才真正生效。X-Emby-* 是 Emby 的标准客户端标识参数，
+   * 历史上出现过不带这几个参数时「回 200 但收藏没落库」的假成功 —— 请求形态带上
+   * 完整的客户端标识后写入才真正生效。X-Emby-* 是 Emby 的标准客户端标识参数，
    * 所有服务端都接受，带上没有副作用。
+   *
+   * 取值来自 [ClientIdentity]，与登录时自报的是同一套（不再冒充 Emby Web）。
+   * DeviceId 与登录用的是同一个种子，所以服务端看到的是一台设备而不是两台。
    */
-  internal val WEB_CLIENT_QUERY: Map<String, String> = mapOf(
-    "X-Emby-Client" to "Emby Web",
-    "X-Emby-Device-Name" to "Chrome Windows",
-    "X-Emby-Device-Id" to "ca3b0a8f-2ff0-46ea-aa02-a6abf72f0061",
-    "X-Emby-Client-Version" to "4.10.1.0",
-    "X-Emby-Language" to "zh-cn",
-  )
+  internal fun webClientQuery(deviceId: String): Map<String, String> = ClientIdentity.apiQuery(deviceId)
 
   /**
    * 超过这个耗时的请求，在 [execString] 的计时日志里按「慢请求」标出（毫秒）。

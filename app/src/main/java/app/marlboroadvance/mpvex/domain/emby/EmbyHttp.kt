@@ -51,7 +51,7 @@ object EmbyHttp {
    * 算进校验，探测与真正拉流两边不一致时会「探测能过、播放被 403」
    * （这个坑踩过，见 player.md）。
    */
-  private const val USER_AGENT = EmbyClient.STREAM_USER_AGENT
+  private val USER_AGENT: String get() = EmbyClient.STREAM_USER_AGENT
 
   /**
    * 401 自动重登回调。

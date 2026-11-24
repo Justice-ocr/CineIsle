@@ -154,14 +154,14 @@ object EmbyClient {
   private val EMPTY_BODY get() = EmbyHttpCore.EMPTY_BODY
 
   /**
-   * 收藏 / 已播放等开关型请求附带的客户端标识 query 参数。
+   * 客户端标识 query（收藏 / 已播放等开关型请求用），取值见 [ClientIdentity]。
    *
-   * 与 Emby Web 请求一致：该服务端上
-   * 历史上出现过不带这几个参数时「回 200 但收藏没落库」的假成功 —— 请求形态与
-   * Web 完全一致后写入才真正生效。X-Emby-* 是 Emby 的标准客户端标识参数，
-   * 所有服务端都接受，带上没有副作用。
+   * 历史上出现过不带这几个参数时「回 200 但收藏没落库」的假成功 —— 带上完整的
+   * 客户端标识后写入才真正生效。入参是这台服务器的 DeviceId 种子（与登录一致），
+   * 保证服务端看到的是同一台设备，而不是「登录一个客户端、收藏另一个客户端」。
    */
-  private val WEB_CLIENT_QUERY: Map<String, String> get() = EmbyHttpCore.WEB_CLIENT_QUERY
+  private fun webClientQuery(server: EmbyServer): Map<String, String> =
+    EmbyHttpCore.webClientQuery(androidDeviceId(server.host))
 
   /**
    * 拉流时统一使用的 User-Agent。
@@ -169,8 +169,11 @@ object EmbyClient {
    * 「预解析直链（302）」探测与播放器真正拉流**必须用同一个 UA**：
    * 网盘直链的签名常把 UA 算进校验，两边不一致时探测能过、播放被 403。
    * 播放器侧通过 intent extra `headers` 收到同一个值（见 EmbyViewModel 的播放入口）。
+   *
+   * 取值与登录自报的客户端同源（[ClientIdentity.userAgent]，形如
+   * `Hills/1.11.0 (android; 16)`），保证服务端全链路只看到一个客户端。
    */
-  const val STREAM_USER_AGENT = "mpvex/1.0"
+  val STREAM_USER_AGENT: String get() = ClientIdentity.userAgent
 
   /** 视频类媒体（用于把音乐、图片从影视列表中过滤掉）。取流/查询侧也要用，故为 internal */
   internal const val VIDEO_MEDIA_TYPE = "Video"
@@ -250,21 +253,28 @@ object EmbyClient {
   /**
    * 用用户名密码登录。返回的 AccessToken 写回 [EmbyServer.apiToken]。
    *
-   * Emby 要求 X-Emby-Authorization header，格式：
-   *   MediaBrowser Client="mpvEx", Device="Android", DeviceId="<uuid>", Version="1.0"
+   * 请求形态与 Hills 1.11.0 真机发出的登录请求逐字段一致（见 [ClientIdentity]）：
+   * · 客户端标识 6 个参数全部放 query（含 `X-Emby-Authorization`）；
+   * · `x-emby-authorization` header 用 `Emby Client="…"` 前缀；
+   * · body 同时带 `Password` 与 `Pw`（Emby 两个字段名都认，Hills 两个都发）。
    */
   fun authenticateByName(server: EmbyServer, username: String, password: String): EmbyAuthResult {
-    val body = """{"Username":"$username","Pw":"$password"}"""
     val deviceId = androidDeviceId(server.host)
-    val authHeader =
-      """MediaBrowser Client="mpvEx", Device="Android", DeviceId="$deviceId", Version="1.0.0""""
+    val body = """{"Username":"$username","Password":"$password","Pw":"$password"}"""
+    val authHeader = ClientIdentity.authorizationHeader(deviceId)
+    val query = ClientIdentity.loginQuery(deviceId).entries.joinToString("&") { (k, v) ->
+      "$k=${java.net.URLEncoder.encode(v, "UTF-8")}"
+    }
     val req = Request.Builder()
-      .url("${EmbyEndpoints.hostUrl(server)}/emby/Users/AuthenticateByName")
+      .url("${EmbyEndpoints.hostUrl(server)}/emby/Users/AuthenticateByName?$query")
       .header("X-Emby-Authorization", authHeader)
-      .post(body.toRequestBody(jsonMedia))
+      .post(body.toRequestBody(LOGIN_MEDIA))
       .build()
     return execJson(req)
   }
+
+  /** 登录 body 的 content-type：Hills 发的是不带 charset 的 `application/json`。 */
+  private val LOGIN_MEDIA = "application/json".toMediaType()
 
   /** 拉取服务器公开信息（无需登录）。 */
   fun getPublicSystemInfo(server: EmbyServer): EmbySystemInfo = getJson(server, "/System/Info/Public")
@@ -905,10 +915,10 @@ object EmbyClient {
    */
   private fun toggleUserState(server: EmbyServer, basePath: String, enable: Boolean): EmbyUserData? {
     val path = if (enable) basePath else "$basePath/Delete"
-    // 客户端标识 + token 一起进 query：与 Emby Web 请求一致（见 [WEB_CLIENT_QUERY]）
+    // 客户端标识 + token 一起进 query（取值见 [ClientIdentity]，与登录同一套）
     val clientQuery: Map<String, String?> = buildMap {
       put("X-Emby-Token", server.apiToken.takeIf { it.isNotEmpty() })
-      putAll(WEB_CLIENT_QUERY)
+      putAll(webClientQuery(server))
     }
     // 请求构造：token 同时放 query 与 header + Accept: application/json（对齐 Emby Web）
     val buildRequest: (okhttp3.RequestBody) -> Request = { body ->
@@ -950,10 +960,10 @@ object EmbyClient {
    */
   fun unfavoriteHard(server: EmbyServer, itemId: String): EmbyUserData? {
     val base = "/Users/${server.userId}/FavoriteItems/$itemId"
-    // 客户端标识 + token 一起进 query（同 [toggleUserState]，对齐 Emby Web）
+    // 客户端标识 + token 一起进 query（同 [toggleUserState]）
     val clientQuery: Map<String, String?> = buildMap {
       put("X-Emby-Token", server.apiToken.takeIf { it.isNotEmpty() })
-      putAll(WEB_CLIENT_QUERY)
+      putAll(webClientQuery(server))
     }
     // 1) 兼容服务端认的写法（POST 到 /Delete）
     val viaPost = runCatching { toggleUserState(server, base, false) }
